@@ -8,13 +8,18 @@ import re
 import sys
 
 cfg = {}
-
 with open('cfg.py') as fp:
     exec(fp.read(), None, cfg)
 
 user_id2id = {}
 post_id2id = {}
+post_child_cnts = {}
 comm_id2id = {}
+comm_sort_keys = {}
+comm_child_cnts = {}
+
+def get_comm_sort_code(idx):
+    return chr(idx)
 
 def main():
     db_to = psycopg2.connect(dbname=cfg['PGSQL_DB'])
@@ -72,7 +77,9 @@ def main():
             RETURNING id
         ''', [user_id, name, text, ts, 1]) # FIXME
 
-        post_id2id[id] = cur_to.fetchone()[0]
+        new_id = cur_to.fetchone()[0]
+        post_id2id[id] = new_id
+        post_child_cnts[new_id] = 0
 
     cur_from.execute('SELECT parent, ismember, name, memo, reg_date, no FROM pbb_board_comment_freedom ORDER BY no')
     for row in cur_from:
@@ -95,19 +102,41 @@ def main():
                     continue
                 parent_id = comm_id2id[parent_id]
             else:
-                parent_id, level = None, None
+                parent_id, level = None, 0
         except KeyError:
             #print('Unable to find an id', file=sys.stderr)
             continue # FIXME
 
+        if parent_id:
+            comm_child_cnts[parent_id] += 1
+            sort_key = comm_sort_keys[parent_id] + '.' + get_comm_sort_code(comm_child_cnts[parent_id])
+
+            cur_to.execute('''
+                UPDATE comm
+                SET child_cnt = child_cnt + 1
+                WHERE id = %s
+            ''', [parent_id])
+        else:
+            post_child_cnts[post_id] += 1
+            sort_key = get_comm_sort_code(post_child_cnts[post_id])
+
+            cur_to.execute('''
+                UPDATE post
+                SET child_cnt = child_cnt + 1
+                WHERE id = %s
+            ''', [post_id])
+
         cur_to.execute('''
             INSERT INTO comm
-            (text, ts, user_id, post_id, parent_id, level)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            (text, ts, user_id, post_id, parent_id, level, sort_key)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id
-        ''', [text, ts, user_id, post_id, parent_id, level])
+        ''', [text, ts, user_id, post_id, parent_id, level, sort_key])
 
-        comm_id2id[id] = cur_to.fetchone()[0]
+        new_id = cur_to.fetchone()[0]
+        comm_id2id[id] = new_id
+        comm_sort_keys[new_id] = sort_key
+        comm_child_cnts[new_id] = 0
 
     db_to.commit()
 
