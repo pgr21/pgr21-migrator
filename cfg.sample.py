@@ -1,0 +1,5 @@
+MYSQL_USERNAME = ''
+MYSQL_PASSWORD = ''
+MYSQL_DB = ''
+
+PGSQL_DB = ''
