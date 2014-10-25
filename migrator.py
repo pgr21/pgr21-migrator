@@ -12,28 +12,36 @@ with open('cfg.py') as fp:
     exec(fp.read(), None, cfg)
 
 user_id2id = {}
-post_id2id = {}
-post_child_cnts = {}
-comm_id2id = {}
-comm_sort_keys = {}
-comm_child_cnts = {}
 
 def get_comm_sort_code(idx):
     return chr(idx)
 
 def main():
-    db_to = psycopg2.connect(dbname=cfg['PGSQL_DB'])
-    cur_to = db_to.cursor()
+    global db_from, cur_from, db_to, cur_to
 
     db_from = pymysql.connect(user=cfg['MYSQL_USERNAME'], passwd=cfg['MYSQL_PASSWORD'], database=cfg['MYSQL_DB'])
     cur_from = db_from.cursor()
     cur_from.execute('SET names utf8')
     cur_from.execute('SET wait_timeout = 3600')
 
+    db_to = psycopg2.connect(dbname=cfg['PGSQL_DB'])
+    cur_to = db_to.cursor()
+
+    print('Deleting existing data...')
     cur_to.execute('DELETE FROM comm')
     cur_to.execute('DELETE FROM post')
+    cur_to.execute('DELETE FROM board')
     cur_to.execute('DELETE FROM "user"')
+    db_to.commit()
 
+    print('Importing users...')
+    import_users()
+
+    for key, name in cfg['BOARDS']:
+        print('Importing board {} ({})...'.format(key, name))
+        import_board(key, name)
+
+def import_users():
     cur_from.execute('SELECT no, user_id, password, name FROM pbb_member_table ORDER BY no')
     for row in cur_from:
         id = row[0]
@@ -59,7 +67,25 @@ def main():
         finally:
             cur_to.execute('RELEASE tmp')
 
-    cur_from.execute('SELECT ismember, memo, subject, reg_date, no FROM pbb_board_freedom ORDER BY no')
+    db_to.commit()
+
+def import_board(key, name):
+    post_id2id = {}
+    post_child_cnts = {}
+    comm_id2id = {}
+    comm_sort_keys = {}
+    comm_child_cnts = {}
+
+    cur_to.execute('''
+        INSERT INTO board
+        (name, ts)
+        VALUES (%s, %s)
+        RETURNING id
+    ''', [name, datetime.datetime.now()])
+
+    board_id = cur_to.fetchone()[0]
+
+    cur_from.execute('SELECT ismember, memo, subject, reg_date, no FROM pbb_board_{} ORDER BY no'.format(key))
     for row in cur_from:
         try: user_id = user_id2id[row[0]]
         except KeyError:
@@ -75,13 +101,13 @@ def main():
             (user_id, name, text, ts, board_id)
             VALUES (%s, %s, %s, %s, %s)
             RETURNING id
-        ''', [user_id, name, text, ts, 1]) # FIXME
+        ''', [user_id, name, text, ts, board_id])
 
         new_id = cur_to.fetchone()[0]
         post_id2id[id] = new_id
         post_child_cnts[new_id] = 0
 
-    cur_from.execute('SELECT parent, ismember, name, memo, reg_date, no FROM pbb_board_comment_freedom ORDER BY no')
+    cur_from.execute('SELECT parent, ismember, name, memo, reg_date, no FROM pbb_board_comment_{} ORDER BY no'.format(key))
     for row in cur_from:
         try:
             post_id = post_id2id[row[0]]
